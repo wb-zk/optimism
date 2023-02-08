@@ -9,28 +9,16 @@ const deployFn: DeployFunction = async (hre) => {
     hre,
     name: 'L2OutputOracle',
     args: [
-      hre.deployConfig.l2OutputOracleSubmissionInterval,
       hre.deployConfig.l2BlockTime,
       0,
       0,
-      hre.deployConfig.l2OutputOracleProposer,
       hre.deployConfig.l2OutputOracleChallenger,
     ],
     postDeployAction: async (contract) => {
       await assertContractVariable(
         contract,
-        'SUBMISSION_INTERVAL',
-        hre.deployConfig.l2OutputOracleSubmissionInterval
-      )
-      await assertContractVariable(
-        contract,
         'L2_BLOCK_TIME',
         hre.deployConfig.l2BlockTime
-      )
-      await assertContractVariable(
-        contract,
-        'PROPOSER',
-        hre.deployConfig.l2OutputOracleProposer
       )
       await assertContractVariable(
         contract,

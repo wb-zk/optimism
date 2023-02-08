@@ -337,11 +337,9 @@ func l1Deployer(backend *backends.SimulatedBackend, opts *bind.TransactOpts, dep
 		_, tx, _, err = bindings.DeployL2OutputOracle(
 			opts,
 			backend,
-			deployment.Args[0].(*big.Int),
 			deployment.Args[1].(*big.Int),
 			deployment.Args[2].(*big.Int),
 			deployment.Args[3].(*big.Int),
-			deployment.Args[4].(common.Address),
 			deployment.Args[5].(common.Address),
 		)
 	case "OptimismPortal":

@@ -222,7 +222,7 @@ func TestBedrockIndexer(t *testing.T) {
 		proveTx, err := portal.ProveWithdrawalTransaction(
 			l1Opts,
 			withdrawalTx,
-			wParams.L2OutputIndex,
+			wParams.L2BlockNumber,
 			wParams.OutputRootProof,
 			wParams.WithdrawalProof,
 		)

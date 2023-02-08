@@ -78,10 +78,6 @@ task('watch', 'Watch an Optimism System')
       l1Provider
     )
 
-    const proposer = await L2OutputOracle.proposer()
-    console.log(`L2OutputOracle proposer ${proposer}`)
-    console.log()
-
     setInterval(async () => {
       const latestBlockNumber = await L2OutputOracle.latestBlockNumber()
       console.log(
@@ -94,7 +90,6 @@ task('watch', 'Watch an Optimism System')
       const block = await l1Provider.getBlockWithTransactions(num)
       for (const txn of block.transactions) {
         const to = utils.getAddress(txn.to || hre.ethers.constants.AddressZero)
-        const from = utils.getAddress(txn.from)
         const isBatchSender =
           utils.getAddress(txn.from) ===
           utils.getAddress(opNodeConfig.batch_sender_address)
@@ -103,7 +98,9 @@ task('watch', 'Watch an Optimism System')
 
         const isOutputOracle =
           to === utils.getAddress(L2OutputOracle.address) &&
-          from === utils.getAddress(proposer)
+          txn.data.startsWith(
+            L2OutputOracle.interface.getSighash('proposeL2Output')
+          )
 
         if (isBatchSender && isBatchInbox) {
           console.log('Batch submitted:')
