@@ -15,7 +15,6 @@ export interface BedrockOutputData {
   outputRoot: string
   l1Timestamp: number
   l2BlockNumber: number
-  l2OutputIndex: number
 }
 
 /**
@@ -32,7 +31,7 @@ export interface OutputRootProof {
  * Bedrock proof data required to finalize an L2 to L1 message.
  */
 export interface BedrockCrossChainMessageProof {
-  l2OutputIndex: number
+  l2BlockNumber: number
   outputRootProof: OutputRootProof
   withdrawalProof: string[]
 }

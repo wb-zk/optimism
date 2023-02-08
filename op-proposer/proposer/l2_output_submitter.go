@@ -270,15 +270,6 @@ func (l *L2OutputSubmitter) SendTransaction(ctx context.Context, tx *types.Trans
 // FetchNextOutputInfo gets the block number of the next proposal.
 // It returns: the next block number, if the proposal should be made, error
 func (l *L2OutputSubmitter) FetchNextOutputInfo(ctx context.Context) (*eth.OutputResponse, bool, error) {
-	callOpts := &bind.CallOpts{
-		From:    l.from,
-		Context: ctx,
-	}
-	nextCheckpointBlock, err := l.l2ooContract.NextBlockNumber(callOpts)
-	if err != nil {
-		l.log.Error("proposer unable to get next block number", "err", err)
-		return nil, false, err
-	}
 	// Fetch the current L2 heads
 	status, err := l.rollupClient.SyncStatus(ctx)
 	if err != nil {
@@ -292,23 +283,18 @@ func (l *L2OutputSubmitter) FetchNextOutputInfo(ctx context.Context) (*eth.Outpu
 	} else {
 		currentBlockNumber = new(big.Int).SetUint64(status.FinalizedL2.Number)
 	}
-	// Ensure that we do not submit a block in the future
-	if currentBlockNumber.Cmp(nextCheckpointBlock) < 0 {
-		l.log.Info("proposer submission interval has not elapsed", "currentBlockNumber", currentBlockNumber, "nextBlockNumber", nextCheckpointBlock)
-		return nil, false, nil
-	}
 
-	output, err := l.rollupClient.OutputAtBlock(ctx, nextCheckpointBlock.Uint64())
+	output, err := l.rollupClient.OutputAtBlock(ctx, currentBlockNumber.Uint64())
 	if err != nil {
-		l.log.Error("failed to fetch output at block %d: %w", nextCheckpointBlock, err)
+		l.log.Error("failed to fetch output at block %d: %w", currentBlockNumber, err)
 		return nil, false, err
 	}
 	if output.Version != supportedL2OutputVersion {
 		l.log.Error("unsupported l2 output version: %s", output.Version)
 		return nil, false, errors.New("unsupported l2 output version")
 	}
-	if output.BlockRef.Number != nextCheckpointBlock.Uint64() { // sanity check, e.g. in case of bad RPC caching
-		l.log.Error("invalid blockNumber: next blockNumber is %v, blockNumber of block is %v", nextCheckpointBlock, output.BlockRef.Number)
+	if output.BlockRef.Number != currentBlockNumber.Uint64() { // sanity check, e.g. in case of bad RPC caching
+		l.log.Error("invalid blockNumber: next blockNumber is %v, blockNumber of block is %v", currentBlockNumber, output.BlockRef.Number)
 		return nil, false, errors.New("invalid blockNumber")
 	}
 

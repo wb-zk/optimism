@@ -118,11 +118,9 @@ contract L2OutputOracle_Initializer is CommonTest {
         vm.roll(startingBlockNumber);
         // Deploy the L2OutputOracle and transfer owernship to the proposer
         oracleImpl = new L2OutputOracle(
-            submissionInterval,
             l2BlockTime,
             startingBlockNumber,
             startingTimestamp,
-            proposer,
             owner
         );
         Proxy proxy = new Proxy(multisig);

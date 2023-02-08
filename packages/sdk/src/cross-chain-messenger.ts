@@ -1048,12 +1048,11 @@ export class CrossChainMessenger {
     // We'll explicitly handle "cannot get output" errors as a null return value, but anything else
     // needs to get thrown. Might need to revisit this in the future to be a little more robust
     // when connected to RPCs that don't return nice error messages.
-    let l2OutputIndex: BigNumber
+    let proposal: any
     try {
-      l2OutputIndex =
-        await this.contracts.l1.L2OutputOracle.getL2OutputIndexAfter(
-          resolved.blockNumber
-        )
+      proposal = await this.contracts.l1.L2OutputOracle.getL2OutputAfter(
+        resolved.blockNumber
+      )
     } catch (err) {
       if (err.message.includes('L2OutputOracle: cannot get output')) {
         return null
@@ -1062,18 +1061,11 @@ export class CrossChainMessenger {
       }
     }
 
-    // Now pull the proposal out given the output index. Should always work as long as the above
-    // codepath completed successfully.
-    const proposal = await this.contracts.l1.L2OutputOracle.getL2Output(
-      l2OutputIndex
-    )
-
     // Format everything and return it nicely.
     return {
       outputRoot: proposal.outputRoot,
       l1Timestamp: proposal.timestamp.toNumber(),
       l2BlockNumber: proposal.l2BlockNumber.toNumber(),
-      l2OutputIndex: l2OutputIndex.toNumber(),
     }
   }
 
@@ -1371,7 +1363,7 @@ export class CrossChainMessenger {
         latestBlockhash: block.hash,
       },
       withdrawalProof: stateTrieProof.storageProof,
-      l2OutputIndex: output.l2OutputIndex,
+      l2BlockNumber: output.l2BlockNumber,
     }
   }
 
@@ -1762,7 +1754,7 @@ export class CrossChainMessenger {
           withdrawal.minGasLimit,
           withdrawal.message,
         ],
-        proof.l2OutputIndex,
+        proof.l2BlockNumber,
         [
           proof.outputRootProof.version,
           proof.outputRootProof.stateRoot,

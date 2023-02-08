@@ -42,49 +42,25 @@ func WaitForFinalizationPeriod(ctx context.Context, client *ethclient.Client, po
 	if err != nil {
 		return 0, err
 	}
-	submissionInterval, err := l2OO.SUBMISSIONINTERVAL(opts)
-	if err != nil {
-		return 0, err
-	}
-	// Convert blockNumber to submission interval boundary
-	rem := new(big.Int)
-	l2BlockNumber, rem = l2BlockNumber.DivMod(l2BlockNumber, submissionInterval, rem)
-	if rem.Cmp(common.Big0) != 0 {
-		l2BlockNumber = l2BlockNumber.Add(l2BlockNumber, common.Big1)
-	}
-	l2BlockNumber = l2BlockNumber.Mul(l2BlockNumber, submissionInterval)
 
 	finalizationPeriod, err := portal.FINALIZATIONPERIODSECONDS(opts)
 	if err != nil {
 		return 0, err
 	}
 
-	latest, err := l2OO.LatestBlockNumber(opts)
-	if err != nil {
-		return 0, err
-	}
-
 	// Now poll for the output to be submitted on chain
-	var ticker *time.Ticker
-	diff := new(big.Int).Sub(l2BlockNumber, latest)
-	if diff.Cmp(big.NewInt(10)) > 0 {
-		ticker = time.NewTicker(time.Minute)
-	} else {
-		ticker = time.NewTicker(time.Second)
-	}
+	var ticker = time.NewTicker(time.Second * 5)
 
 loop:
 	for {
 		select {
 		case <-ticker.C:
-			latest, err = l2OO.LatestBlockNumber(opts)
+			_, err := l2OO.GetL2OutputAfter(opts, l2BlockNumber)
 			if err != nil {
 				return 0, err
 			}
-			// Already passed the submitted block (likely just equals rather than >= here).
-			if latest.Cmp(l2BlockNumber) >= 0 {
-				break loop
-			}
+
+			break loop
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
@@ -137,7 +113,7 @@ type ProvenWithdrawalParameters struct {
 	Target          common.Address
 	Value           *big.Int
 	GasLimit        *big.Int
-	L2OutputIndex   *big.Int
+	L2BlockNumber   *big.Int
 	Data            []byte
 	OutputRootProof bindings.TypesOutputRootProof
 	WithdrawalProof [][]byte // List of trie nodes to prove L2 storage
@@ -171,10 +147,10 @@ func ProveWithdrawalParameters(ctx context.Context, proofCl ProofClient, l2Recei
 		return ProvenWithdrawalParameters{}, err
 	}
 
-	// Fetch the L2OutputIndex from the L2 Output Oracle caller (on L1)
-	l2OutputIndex, err := l2OutputOracleContract.GetL2OutputIndexAfter(&bind.CallOpts{}, header.Number)
+	// Fetch the L2 Output from the L2 Output Oracle caller (on L1)
+	output, err := l2OutputOracleContract.GetL2OutputAfter(&bind.CallOpts{}, header.Number)
 	if err != nil {
-		return ProvenWithdrawalParameters{}, fmt.Errorf("failed to get l2OutputIndex: %w", err)
+		return ProvenWithdrawalParameters{}, fmt.Errorf("failed to get L2 output: %w", err)
 	}
 	// TODO: Could skip this step, but it's nice to double check it
 	err = VerifyProof(header.Root, p)
@@ -197,7 +173,7 @@ func ProveWithdrawalParameters(ctx context.Context, proofCl ProofClient, l2Recei
 		Target:        ev.Target,
 		Value:         ev.Value,
 		GasLimit:      ev.GasLimit,
-		L2OutputIndex: l2OutputIndex,
+		L2BlockNumber: output.L2BlockNumber,
 		Data:          ev.Data,
 		OutputRootProof: bindings.TypesOutputRootProof{
 			Version:                  [32]byte{}, // Empty for version 1

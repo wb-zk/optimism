@@ -25,12 +25,12 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
      *
      * @custom:field outputRoot    Root of the L2 output this was proven against.
      * @custom:field timestamp     Timestamp at whcih the withdrawal was proven.
-     * @custom:field l2OutputIndex Index of the output this was proven against.
+     * @custom:field l2BlockNumber L2 block number this was proven against.
      */
     struct ProvenWithdrawal {
         bytes32 outputRoot;
         uint128 timestamp;
-        uint128 l2OutputIndex;
+        uint128 l2BlockNumber;
     }
 
     /**
@@ -153,13 +153,13 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
      * @notice Proves a withdrawal transaction.
      *
      * @param _tx              Withdrawal transaction to finalize.
-     * @param _l2OutputIndex   L2 output index to prove against.
+     * @param _l2BlockNumber   L2 block number to prove against.
      * @param _outputRootProof Inclusion proof of the L2ToL1MessagePasser contract's storage root.
      * @param _withdrawalProof Inclusion proof of the withdrawal in L2ToL1MessagePasser contract.
      */
     function proveWithdrawalTransaction(
         Types.WithdrawalTransaction memory _tx,
-        uint256 _l2OutputIndex,
+        uint256 _l2BlockNumber,
         Types.OutputRootProof calldata _outputRootProof,
         bytes[] calldata _withdrawalProof
     ) external {
@@ -173,7 +173,7 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
 
         // Get the output root and load onto the stack to prevent multiple mloads. This will
         // revert if there is no output root for the given block number.
-        bytes32 outputRoot = L2_ORACLE.getL2Output(_l2OutputIndex).outputRoot;
+        bytes32 outputRoot = L2_ORACLE.getL2Output(_l2BlockNumber).outputRoot;
 
         // Verify that the output root can be generated with the elements in the proof.
         require(
@@ -193,8 +193,7 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
         // output index has been updated.
         require(
             provenWithdrawal.timestamp == 0 ||
-                (_l2OutputIndex == provenWithdrawal.l2OutputIndex &&
-                    outputRoot != provenWithdrawal.outputRoot),
+                outputRoot != provenWithdrawal.outputRoot,
             "OptimismPortal: withdrawal hash has already been proven"
         );
 
@@ -228,7 +227,7 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
         provenWithdrawals[withdrawalHash] = ProvenWithdrawal({
             outputRoot: outputRoot,
             timestamp: uint128(block.timestamp),
-            l2OutputIndex: uint128(_l2OutputIndex)
+            l2BlockNumber: uint128(_l2BlockNumber)
         });
 
         // Emit a `WithdrawalProven` event.
@@ -281,7 +280,7 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
         // Grab the OutputProposal from the L2OutputOracle, will revert if the output that
         // corresponds to the given index has not been proposed yet.
         Types.OutputProposal memory proposal = L2_ORACLE.getL2Output(
-            provenWithdrawal.l2OutputIndex
+            provenWithdrawal.l2BlockNumber
         );
 
         // Check that the output root that was used to prove the withdrawal is the same as the
@@ -397,12 +396,12 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
      * @notice Determine if a given output is finalized. Reverts if the call to
      *         L2_ORACLE.getL2Output reverts. Returns a boolean otherwise.
      *
-     * @param _l2OutputIndex Index of the L2 output to check.
+     * @param _l2BlockNumber Block number to check.
      *
      * @return Whether or not the output is finalized.
      */
-    function isOutputFinalized(uint256 _l2OutputIndex) external view returns (bool) {
-        return _isFinalizationPeriodElapsed(L2_ORACLE.getL2Output(_l2OutputIndex).timestamp);
+    function isOutputFinalized(uint256 _l2BlockNumber) external view returns (bool) {
+        return _isFinalizationPeriodElapsed(L2_ORACLE.getL2Output(_l2BlockNumber).timestamp);
     }
 
     /**

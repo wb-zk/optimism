@@ -561,7 +561,7 @@ func handleFinalizeERC20Withdrawal(args []any, receipt *types.Receipt, l1Standar
 // withdrawal and then send the transaction and make sure that it is included
 // and successful and then wait for the finalization period to elapse.
 func proveWithdrawalTransaction(c *contracts, cl *clients, opts *bind.TransactOpts, withdrawal *crossdomain.Withdrawal, bn, finalizationPeriod *big.Int) error {
-	l2OutputIndex, outputRootProof, trieNodes, err := createOutput(withdrawal, c.L2OutputOracle, bn, cl)
+	l2BlockNumber, outputRootProof, trieNodes, err := createOutput(withdrawal, c.L2OutputOracle, bn, cl)
 	if err != nil {
 		return err
 	}
@@ -575,7 +575,7 @@ func proveWithdrawalTransaction(c *contracts, cl *clients, opts *bind.TransactOp
 	tx, err := c.OptimismPortal.ProveWithdrawalTransaction(
 		opts,
 		wdTx,
-		l2OutputIndex,
+		l2BlockNumber,
 		outputRootProof,
 		trieNodes,
 	)
@@ -859,20 +859,14 @@ func createOutput(
 		return nil, bindings.TypesOutputRootProof{}, nil, err
 	}
 
-	// find the output index that the withdrawal was committed to in
-	l2OutputIndex, err := oracle.GetL2OutputIndexAfter(&bind.CallOpts{}, blockNumber)
-	if err != nil {
-		return nil, bindings.TypesOutputRootProof{}, nil, err
-	}
 	// fetch the output the commits to the withdrawal using the index
-	l2Output, err := oracle.GetL2Output(&bind.CallOpts{}, l2OutputIndex)
+	l2Output, err := oracle.GetL2OutputAfter(&bind.CallOpts{}, blockNumber)
 	if err != nil {
 		return nil, bindings.TypesOutputRootProof{}, nil, err
 	}
 
 	log.Debug(
 		"L2 output",
-		"index", l2OutputIndex,
 		"root", common.Bytes2Hex(l2Output.OutputRoot[:]),
 		"l2-blocknumber", l2Output.L2BlockNumber,
 		"timestamp", l2Output.Timestamp,
@@ -928,7 +922,7 @@ func createOutput(
 		"trie-node-count", len(trieNodes),
 	)
 
-	return l2OutputIndex, outputRootProof, trieNodes, nil
+	return l2Output.L2BlockNumber, outputRootProof, trieNodes, nil
 }
 
 // writeSuspicious will create a suspiciousWithdrawal and then append it to a
