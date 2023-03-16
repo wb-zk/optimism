@@ -204,6 +204,8 @@ type System struct {
 
 	RollupConfig *rollup.Config
 
+	L2GenesisCfg *core.Genesis
+
 	// Connections to running nodes
 	Nodes             map[string]*node.Node
 	Backends          map[string]*geth_eth.Ethereum
@@ -313,6 +315,7 @@ func (cfg SystemConfig) Start(_opts ...SystemConfigOption) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
+	sys.L2GenesisCfg = l2Genesis
 	for addr, amount := range cfg.Premine {
 		if existing, ok := l2Genesis.Alloc[addr]; ok {
 			l2Genesis.Alloc[addr] = core.GenesisAccount{
@@ -400,30 +403,10 @@ func (cfg SystemConfig) Start(_opts ...SystemConfigOption) (*System, error) {
 	// Configure connections to L1 and L2 for rollup nodes.
 	// TODO: refactor testing to use in-process rpc connections instead of websockets.
 
-	l1EndpointConfig := l1Node.WSEndpoint()
-	useHTTP := os.Getenv("OP_E2E_USE_HTTP") == "true"
-	if useHTTP {
-		log.Info("using HTTP client")
-		l1EndpointConfig = l1Node.HTTPEndpoint()
-	}
-
 	for name, rollupCfg := range cfg.Nodes {
-		l2EndpointConfig := sys.Nodes[name].WSAuthEndpoint()
-		if useHTTP {
-			l2EndpointConfig = sys.Nodes[name].HTTPAuthEndpoint()
-		}
-		rollupCfg.L1 = &rollupNode.L1EndpointConfig{
-			L1NodeAddr:       l1EndpointConfig,
-			L1TrustRPC:       false,
-			L1RPCKind:        sources.RPCKindBasic,
-			RateLimit:        0,
-			BatchSize:        20,
-			HttpPollInterval: time.Duration(cfg.DeployConfig.L1BlockTime) * time.Second / 10,
-		}
-		rollupCfg.L2 = &rollupNode.L2EndpointConfig{
-			L2EngineAddr:      l2EndpointConfig,
-			L2EngineJWTSecret: cfg.JWTSecret,
-		}
+		configureL1(rollupCfg, l1Node)
+		configureL2(rollupCfg, sys.Nodes[name], cfg.JWTSecret)
+
 		rollupCfg.L2Sync = &rollupNode.PreparedL2SyncEndpoint{
 			Client:   nil,
 			TrustRPC: false,
@@ -628,6 +611,35 @@ func (cfg SystemConfig) Start(_opts ...SystemConfigOption) (*System, error) {
 	}
 
 	return sys, nil
+}
+
+func configureL1(rollupNodeCfg *rollupNode.Config, l1Node *node.Node) {
+	l1EndpointConfig := l1Node.WSEndpoint()
+	useHTTP := os.Getenv("OP_E2E_USE_HTTP") == "true"
+	if useHTTP {
+		log.Info("using HTTP client")
+		l1EndpointConfig = l1Node.HTTPEndpoint()
+	}
+	rollupNodeCfg.L1 = &rollupNode.L1EndpointConfig{
+		L1NodeAddr:       l1EndpointConfig,
+		L1TrustRPC:       false,
+		L1RPCKind:        sources.RPCKindBasic,
+		RateLimit:        0,
+		BatchSize:        20,
+		HttpPollInterval: time.Millisecond * 100,
+	}
+}
+func configureL2(rollupNodeCfg *rollupNode.Config, l2Node *node.Node, jwtSecret [32]byte) {
+	useHTTP := os.Getenv("OP_E2E_USE_HTTP") == "true"
+	l2EndpointConfig := l2Node.WSAuthEndpoint()
+	if useHTTP {
+		l2EndpointConfig = l2Node.HTTPAuthEndpoint()
+	}
+
+	rollupNodeCfg.L2 = &rollupNode.L2EndpointConfig{
+		L2EngineAddr:      l2EndpointConfig,
+		L2EngineJWTSecret: jwtSecret,
+	}
 }
 
 func (cfg SystemConfig) L1ChainIDBig() *big.Int {

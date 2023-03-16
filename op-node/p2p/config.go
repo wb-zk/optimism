@@ -50,6 +50,9 @@ type Config struct {
 	DisableP2P  bool
 	NoDiscovery bool
 
+	// Enable P2P-based alt-syncing method (req-resp protocol, not gossip)
+	AltSync bool
+
 	// Pubsub Scoring Parameters
 	PeerScoring  pubsub.PeerScoreParams
 	TopicScoring pubsub.TopicScoreParams
