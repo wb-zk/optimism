@@ -50,11 +50,6 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
     L2OutputOracle public immutable L2_ORACLE;
 
     /**
-     *
-     */
-    SystemConfig public immutable SYSTEM_CONFIG;
-
-    /**
      * @notice Address that has the ability to pause and unpause withdrawals.
      */
     address public immutable GUARDIAN;
@@ -153,10 +148,9 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
         address _guardian,
         bool _paused,
         SystemConfig _config
-    ) Semver(1, 3, 0) {
+    ) Semver(1, 3, 0) ResourceMetering(_config) {
         L2_ORACLE = _l2Oracle;
         GUARDIAN = _guardian;
-        SYSTEM_CONFIG = _config;
         initialize(_paused);
     }
 
@@ -204,30 +198,6 @@ contract OptimismPortal is Initializable, ResourceMetering, Semver {
      */
     function donateETH() external payable {
         // Intentionally empty.
-    }
-
-    // TODO: I don't like having so many return args but I also don't like
-    // wrapping them into a struct
-    function resourceConfig() public view override returns (SystemConfig.ResourceConfig memory) {
-        (
-            uint32 maxResourceLimit,
-            uint8 elasticityMultiplier,
-            uint8 baseFeeMaxChangeDenominator,
-            uint32 minimumBaseFee,
-            uint32 systemTxMaxGas,
-            uint128 maximumBaseFee
-        ) = SYSTEM_CONFIG.resourceConfig();
-
-        SystemConfig.ResourceConfig memory config = SystemConfig.ResourceConfig({
-            maxResourceLimit: maxResourceLimit,
-            elasticityMultiplier: elasticityMultiplier,
-            baseFeeMaxChangeDenominator: baseFeeMaxChangeDenominator,
-            minimumBaseFee: minimumBaseFee,
-            systemTxMaxGas: systemTxMaxGas,
-            maximumBaseFee: maximumBaseFee
-        });
-
-        return config;
     }
 
     /**

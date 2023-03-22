@@ -13,7 +13,9 @@ import { SystemConfig } from "../L1/SystemConfig.sol";
  * @notice ResourceMetering implements an EIP-1559 style resource metering system where pricing
  *         updates automatically based on current demand.
  */
-abstract contract ResourceMetering is Initializable {
+contract ResourceMetering is Initializable {
+    SystemConfig public immutable SYSTEM_CONFIG;
+
     /**
      * @notice Represents the various parameters that control the way in which resources are
      *         metered. Corresponds to the EIP-1559 resource metering system.
@@ -37,6 +39,10 @@ abstract contract ResourceMetering is Initializable {
      * @notice Reserve extra slots (to a total of 50) in the storage layout for future upgrades.
      */
     uint256[48] private __gap;
+
+    constructor(SystemConfig _config) {
+        SYSTEM_CONFIG = _config;
+    }
 
     /**
      * @notice Meters access to a function based an amount of a requested resource.
@@ -64,7 +70,7 @@ abstract contract ResourceMetering is Initializable {
         // Update block number and base fee if necessary.
         uint256 blockDiff = block.number - params.prevBlockNum;
 
-        SystemConfig.ResourceConfig memory config = resourceConfig();
+        SystemConfig.ResourceConfig memory config = SYSTEM_CONFIG.resourceConfig();
         int256 targetResourceLimit = int256(uint256(config.maxResourceLimit)) / int256(uint256(config.elasticityMultiplier));
 
         if (blockDiff > 0) {
@@ -134,17 +140,12 @@ abstract contract ResourceMetering is Initializable {
     }
 
     /**
-     * @notice
-     */
-    function resourceConfig() public virtual returns (SystemConfig.ResourceConfig memory);
-
-    /**
      * @notice Sets initial resource parameter values. This function must either be called by the
      *         initializer function of an upgradeable child contract.
      */
     // solhint-disable-next-line func-name-mixedcase
     function __ResourceMetering_init() internal onlyInitializing {
-        SystemConfig.ResourceConfig memory config = resourceConfig();
+        SystemConfig.ResourceConfig memory config = SYSTEM_CONFIG.resourceConfig();
 
         params = ResourceParams({
             prevBaseFee: config.minimumBaseFee,

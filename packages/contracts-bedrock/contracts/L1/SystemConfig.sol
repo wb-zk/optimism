@@ -82,7 +82,7 @@ contract SystemConfig is OwnableUpgradeable, Semver {
      */
     uint64 public gasLimit;
 
-    ResourceConfig public resourceConfig;
+    ResourceConfig public _resourceConfig;
 
     /**
      * @notice Emitted when configuration is updated
@@ -247,10 +247,14 @@ contract SystemConfig is OwnableUpgradeable, Semver {
         require(_config.baseFeeMaxChangeDenominator > 0);
         require(_config.maxResourceLimit + _config.systemTxMaxGas <= gasLimit);
 
-        resourceConfig = _config;
+        _resourceConfig = _config;
     }
 
     function minimumGasLimit() public view returns (uint256) {
-        return resourceConfig.maxResourceLimit + resourceConfig.systemTxMaxGas;
+        return _resourceConfig.maxResourceLimit + _resourceConfig.systemTxMaxGas;
+    }
+
+    function resourceConfig() external view returns (ResourceConfig memory) {
+        return _resourceConfig;
     }
 }
