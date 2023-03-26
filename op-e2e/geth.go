@@ -53,7 +53,7 @@ func waitForL1OriginOnL2(l1BlockNum uint64, client *ethclient.Client, timeout ti
 			}
 
 		case err := <-headSub.Err():
-			return nil, fmt.Errorf("Error in head subscription: %w", err)
+			return nil, fmt.Errorf("error in head subscription: %w", err)
 		case <-timeoutCh:
 			return nil, errors.New("timeout")
 		}
@@ -101,7 +101,7 @@ func waitForBlock(number *big.Int, client *ethclient.Client, timeout time.Durati
 				return client.BlockByNumber(ctx, number)
 			}
 		case err := <-headSub.Err():
-			return nil, fmt.Errorf("Error in head subscription: %w", err)
+			return nil, fmt.Errorf("error in head subscription: %w", err)
 		case <-timeoutCh:
 			return nil, errors.New("timeout")
 		}
@@ -112,6 +112,7 @@ func initL1Geth(cfg *SystemConfig, genesis *core.Genesis, opts ...GethOption) (*
 	ethConfig := &ethconfig.Config{
 		NetworkId: cfg.DeployConfig.L1ChainID,
 		Genesis:   genesis,
+		Miner:     miner.Config{Etherbase: cfg.DeployConfig.CliqueSignerAddress},
 	}
 	nodeConfig := &node.Config{
 		Name:        "l1-geth",
@@ -159,11 +160,11 @@ func (f *fakeSafeFinalizedL1) Start() error {
 			case head := <-headChanges:
 				num := head.Block.NumberU64()
 				if num > f.finalizedDistance {
-					toFinalize := f.eth.BlockChain().GetBlockByNumber(num - f.finalizedDistance)
+					toFinalize := f.eth.BlockChain().GetHeaderByNumber(num - f.finalizedDistance)
 					f.eth.BlockChain().SetFinalized(toFinalize)
 				}
 				if num > f.safeDistance {
-					toSafe := f.eth.BlockChain().GetBlockByNumber(num - f.safeDistance)
+					toSafe := f.eth.BlockChain().GetHeaderByNumber(num - f.safeDistance)
 					f.eth.BlockChain().SetSafe(toSafe)
 				}
 			case <-quit:

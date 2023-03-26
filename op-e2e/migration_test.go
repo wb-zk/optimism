@@ -12,7 +12,10 @@ import (
 	"time"
 
 	bss "github.com/ethereum-optimism/optimism/op-batcher/batcher"
+	batchermetrics "github.com/ethereum-optimism/optimism/op-batcher/metrics"
+	"github.com/ethereum-optimism/optimism/op-node/chaincfg"
 	"github.com/ethereum-optimism/optimism/op-node/sources"
+	proposermetrics "github.com/ethereum-optimism/optimism/op-proposer/metrics"
 	l2os "github.com/ethereum-optimism/optimism/op-proposer/proposer"
 	oplog "github.com/ethereum-optimism/optimism/op-service/log"
 
@@ -267,14 +270,18 @@ func TestMigration(t *testing.T) {
 	snapLog.SetHandler(log.DiscardHandler())
 	rollupNodeConfig := &node.Config{
 		L1: &node.L1EndpointConfig{
-			L1NodeAddr: forkedL1URL,
-			L1TrustRPC: false,
-			L1RPCKind:  sources.RPCKindBasic,
+			L1NodeAddr:       forkedL1URL,
+			L1TrustRPC:       false,
+			L1RPCKind:        sources.RPCKindBasic,
+			RateLimit:        0,
+			BatchSize:        20,
+			HttpPollInterval: 12 * time.Second,
 		},
 		L2: &node.L2EndpointConfig{
 			L2EngineAddr:      gethNode.HTTPAuthEndpoint(),
 			L2EngineJWTSecret: testingJWTSecret,
 		},
+		L2Sync: &node.PreparedL2SyncEndpoint{Client: nil, TrustRPC: false},
 		Driver: driver.Config{
 			VerifierConfDepth:  0,
 			SequencerConfDepth: 0,
@@ -311,7 +318,9 @@ func TestMigration(t *testing.T) {
 		},
 		L1EpochPollInterval: 4 * time.Second,
 	}
-	rollupNode, err := node.New(ctx, rollupNodeConfig, log.New(), snapLog, "", metrics.NewMetrics(""))
+	rollupLog := log.New()
+	rollupNodeConfig.Rollup.LogDescription(rollupLog, chaincfg.L2ChainIDToNetworkName)
+	rollupNode, err := node.New(ctx, rollupNodeConfig, rollupLog, snapLog, "", metrics.NewMetrics(""))
 	require.NoError(t, err)
 
 	require.NoError(t, rollupNode.Start(ctx))
@@ -323,11 +332,14 @@ func TestMigration(t *testing.T) {
 		L1EthRpc:                  forkedL1URL,
 		L2EthRpc:                  gethNode.WSEndpoint(),
 		RollupRpc:                 rollupNode.HTTPEndpoint(),
+		TxManagerTimeout:          10 * time.Minute,
+		OfflineGasEstimation:      true,
+		MaxChannelDuration:        1,
 		MaxL1TxSize:               120_000,
-		TargetL1TxSize:            1,
+		TargetL1TxSize:            100_000,
 		TargetNumFrames:           1,
-		ApproxComprRatio:          1.0,
-		ChannelTimeout:            deployCfg.ChannelTimeout,
+		ApproxComprRatio:          0.4,
+		SubSafetyMargin:           4,
 		PollInterval:              50 * time.Millisecond,
 		NumConfirmations:          1,
 		ResubmissionTimeout:       5 * time.Second,
@@ -336,12 +348,11 @@ func TestMigration(t *testing.T) {
 			Level:  "info",
 			Format: "text",
 		},
-		PrivateKey:                 hexPriv(secrets.Batcher),
-		SequencerBatchInboxAddress: deployCfg.BatchSenderAddress.String(),
-	}, lgr.New("module", "batcher"))
+		PrivateKey: hexPriv(secrets.Batcher),
+	}, lgr.New("module", "batcher"), batchermetrics.NoopMetrics)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		batcher.Stop()
+		batcher.StopIfRunning()
 	})
 
 	proposer, err := l2os.NewL2OutputSubmitterFromCLIConfig(l2os.CLIConfig{
@@ -358,7 +369,7 @@ func TestMigration(t *testing.T) {
 			Format: "text",
 		},
 		PrivateKey: hexPriv(secrets.Proposer),
-	}, lgr.New("module", "proposer"))
+	}, lgr.New("module", "proposer"), proposermetrics.NoopMetrics)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		proposer.Stop()

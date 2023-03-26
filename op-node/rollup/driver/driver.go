@@ -29,6 +29,7 @@ type Metrics interface {
 	RecordL1ReorgDepth(d uint64)
 
 	EngineMetrics
+	SequencerMetrics
 }
 
 type L1Chain interface {
@@ -47,12 +48,14 @@ type DerivationPipeline interface {
 	Reset()
 	Step(ctx context.Context) error
 	AddUnsafePayload(payload *eth.ExecutionPayload)
+	GetUnsafeQueueGap(expectedNumber uint64) (uint64, uint64)
 	Finalize(ref eth.L1BlockRef)
 	FinalizedL1() eth.L1BlockRef
 	Finalized() eth.L2BlockRef
 	SafeL2Head() eth.L2BlockRef
 	UnsafeL2Head() eth.L2BlockRef
 	Origin() eth.L1BlockRef
+	EngineReady() bool
 }
 
 type L1StateIface interface {
@@ -69,7 +72,7 @@ type SequencerIface interface {
 	StartBuildingBlock(ctx context.Context) error
 	CompleteBuildingBlock(ctx context.Context) (*eth.ExecutionPayload, error)
 	PlanNextSequencerAction() time.Duration
-	RunNextSequencerAction(ctx context.Context) *eth.ExecutionPayload
+	RunNextSequencerAction(ctx context.Context) (*eth.ExecutionPayload, error)
 	BuildingOnto() eth.L2BlockRef
 }
 
@@ -78,8 +81,19 @@ type Network interface {
 	PublishL2Payload(ctx context.Context, payload *eth.ExecutionPayload) error
 }
 
+type AltSync interface {
+	// RequestL2Range informs the sync source that the given range of L2 blocks is missing,
+	// and should be retrieved from any available alternative syncing source.
+	// The start of the range is inclusive, the end is exclusive.
+	// The sync results should be returned back to the driver via the OnUnsafeL2Payload(ctx, payload) method.
+	// The latest requested range should always take priority over previous requests.
+	// There may be overlaps in requested ranges.
+	// An error may be returned if the scheduling fails immediately, e.g. a context timeout.
+	RequestL2Range(ctx context.Context, start, end uint64) error
+}
+
 // NewDriver composes an events handler that tracks L1 state, triggers L2 derivation, and optionally sequences new L2 blocks.
-func NewDriver(driverCfg *Config, cfg *rollup.Config, l2 L2Chain, l1 L1Chain, network Network, log log.Logger, snapshotLog log.Logger, metrics Metrics) *Driver {
+func NewDriver(driverCfg *Config, cfg *rollup.Config, l2 L2Chain, l1 L1Chain, altSync AltSync, network Network, log log.Logger, snapshotLog log.Logger, metrics Metrics) *Driver {
 	l1State := NewL1State(log, metrics)
 	sequencerConfDepth := NewConfDepth(driverCfg.SequencerConfDepth, l1State.L1Head, l1)
 	findL1Origin := NewL1OriginSelector(log, cfg, sequencerConfDepth)
@@ -88,12 +102,11 @@ func NewDriver(driverCfg *Config, cfg *rollup.Config, l2 L2Chain, l1 L1Chain, ne
 	attrBuilder := derive.NewFetchingAttributesBuilder(cfg, l1, l2)
 	engine := derivationPipeline
 	meteredEngine := NewMeteredEngine(cfg, engine, metrics, log)
-	sequencer := NewSequencer(log, cfg, meteredEngine, attrBuilder, findL1Origin)
+	sequencer := NewSequencer(log, cfg, meteredEngine, attrBuilder, findL1Origin, metrics)
 
 	return &Driver{
 		l1State:          l1State,
 		derivation:       derivationPipeline,
-		idleDerivation:   false,
 		stateReq:         make(chan chan struct{}),
 		forceReset:       make(chan chan struct{}, 10),
 		startSequencer:   make(chan hashAndErrorChannel, 10),
@@ -112,5 +125,6 @@ func NewDriver(driverCfg *Config, cfg *rollup.Config, l2 L2Chain, l1 L1Chain, ne
 		l1SafeSig:        make(chan eth.L1BlockRef, 10),
 		l1FinalizedSig:   make(chan eth.L1BlockRef, 10),
 		unsafeL2Payloads: make(chan *eth.ExecutionPayload, 10),
+		altSync:          altSync,
 	}
 }
