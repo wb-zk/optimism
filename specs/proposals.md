@@ -22,8 +22,8 @@
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-After processing one or more blocks the outputs will need to be synchronized with the settlement layer (L1) for trustless execution of
-L2-to-L1 messaging, such as withdrawals.
+After processing one or more blocks the outputs will need to be synchronized with the settlement layer (L1)
+for trustless execution of L2-to-L1 messaging, such as withdrawals.
 These output proposals act as the bridge's view into the L2 state.
 [Proposers](./proposer.md) submit the output roots to the settlement layer (L1) and can be contested with a fault proof,
 with a bond at stake if the proof is wrong.
@@ -38,7 +38,8 @@ are part of later specification milestones.
 ## Proposing L2 Output Commitments
 
 The proposer's role is to construct and submit output roots, which are commitments to the L2's state,
-to the `L2OutputOracle` contract on L1 (the settlement layer). The proposer is further detailed in [proposer.md](./proposer.md).
+to the `L2OutputOracle` contract on L1 (the settlement layer).
+The proposer is further detailed in [proposer.md](./proposer.md).
 
 ### L2OutputOracle v1.0.0
 
