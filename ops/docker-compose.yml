@@ -11,20 +11,20 @@ x-system-addr-env: &system-addr-env
 
 services:
   # this is a helper service used because there's no official hardhat image
-#  l1_chain:
-#    image: ethereumoptimism/hardhat-node:${DOCKER_TAG_HARDHAT:-latest}
-#    build:
-#      context: ./docker/hardhat
-#      dockerfile: Dockerfile
-#    env_file:
-#      - ./envs/l1_chain.env
-#    ports:
-#      # expose the service to the host for integration testing
-#      - ${L1CHAIN_HTTP_PORT:-9545}:8545
+  l1_chain:
+    image: ethereumoptimism/hardhat-node:${DOCKER_TAG_HARDHAT:-latest}
+    build:
+      context: ./docker/hardhat
+      dockerfile: Dockerfile
+    env_file:
+      - ./envs/l1_chain.env
+    ports:
+      # expose the service to the host for integration testing
+      - ${L1CHAIN_HTTP_PORT:-19545}:8545
 
   deployer:
-#    depends_on:
-#      - l1_chain
+    depends_on:
+      - l1_chain
     build:
       context: ..
       dockerfile: ./ops/docker/Dockerfile.packages
@@ -33,7 +33,7 @@ services:
     entrypoint: ./deployer.sh
     environment:
       # Env vars for the deployment script.
-      CONTRACTS_RPC_URL: http://172.17.0.1:8545
+      CONTRACTS_RPC_URL: http://l1_chain:8545
       CONTRACTS_DEPLOYER_KEY: 'ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
       CONTRACTS_TARGET_NETWORK: 'local'
     ports:
@@ -42,7 +42,7 @@ services:
 
   dtl:
     depends_on:
-#      - l1_chain
+      - l1_chain
       - deployer
       - l2geth
     build:
@@ -60,16 +60,16 @@ services:
       # used for setting the address manager address
       URL: http://deployer:8081/addresses.json
       # connect to the 2 layers
-      DATA_TRANSPORT_LAYER__L1_RPC_ENDPOINT: http://172.17.0.1:8545
+      DATA_TRANSPORT_LAYER__L1_RPC_ENDPOINT: http://l1_chain:8545
       DATA_TRANSPORT_LAYER__L2_RPC_ENDPOINT: http://l2geth:8545
       DATA_TRANSPORT_LAYER__SYNC_FROM_L2: 'true'
       DATA_TRANSPORT_LAYER__L2_CHAIN_ID: 17
     ports:
-      - ${DTL_PORT:-7878}:7878
+      - ${DTL_PORT:-17878}:7878
 
   l2geth:
     depends_on:
-#      - l1_chain
+      - l1_chain
       - deployer
     build:
       context: ..
@@ -79,9 +79,11 @@ services:
     entrypoint: sh ./geth.sh
     env_file:
       - ./envs/geth.env
+    volumes:
+      - ./data/l2geth:/root/.ethereum/geth/
     environment:
       <<: *system-addr-env
-      ETH1_HTTP: http://172.17.0.1:8545
+      ETH1_HTTP: http://l1_chain:8545
       ROLLUP_TIMESTAMP_REFRESH: 5s
       ROLLUP_STATE_DUMP_PATH: http://deployer:8081/state-dump.latest.json
       # connecting to the DTL
@@ -96,12 +98,12 @@ services:
       ROLLUP_FEE_THRESHOLD_DOWN: 0.9
       ROLLUP_FEE_THRESHOLD_UP: 1.1
     ports:
-      - ${L2GETH_HTTP_PORT:-9545}:8545
-      - ${L2GETH_WS_PORT:-8546}:8546
+      - ${L2GETH_HTTP_PORT:-18545}:8545
+      - ${L2GETH_WS_PORT:-18546}:8546
 
   relayer:
     depends_on:
-#      - l1_chain
+      - l1_chain
       - l2geth
     deploy:
       replicas: 0
@@ -112,14 +114,14 @@ services:
     image: ethereumoptimism/message-relayer:${DOCKER_TAG_MESSAGE_RELAYER:-latest}
     entrypoint: ./relayer.sh
     environment:
-      MESSAGE_RELAYER__L1_RPC_PROVIDER: http://172.17.0.1:8545
+      MESSAGE_RELAYER__L1_RPC_PROVIDER: http://l1_chain:8545
       MESSAGE_RELAYER__L2_RPC_PROVIDER: http://l2geth:8545
       MESSAGE_RELAYER__L1_WALLET: '0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97'
       RETRIES: 60
 
   fault_detector:
     depends_on:
-#      - l1_chain
+      - l1_chain
       - l2geth
     deploy:
       replicas: 0
@@ -130,18 +132,20 @@ services:
     image: ethereumoptimism/fault-detector:${DOCKER_TAG_FAULT_DETECTOR:-latest}
     entrypoint: ./detector.sh
     environment:
-      FAULT_DETECTOR__L1_RPC_PROVIDER: http://172.17.0.1:8545
+      FAULT_DETECTOR__L1_RPC_PROVIDER: http://l1_chain:8545
       FAULT_DETECTOR__L2_RPC_PROVIDER: http://l2geth:8545
       RETRIES: 60
 
   verifier:
     depends_on:
-#      - l1_chain
+      - l1_chain
       - deployer
       - dtl
       - l2geth
     deploy:
       replicas: 1
+    volumes:
+      - ./data/verifier:/root/.ethereum/geth/
     build:
       context: ..
       dockerfile: ./l2geth/Dockerfile
@@ -151,7 +155,7 @@ services:
       - ./envs/geth.env
     environment:
       <<: *system-addr-env
-      ETH1_HTTP: http://172.17.0.1:8545
+      ETH1_HTTP: http://l1_chain:8545
       SEQUENCER_CLIENT_HTTP: http://l2geth:8545
       ROLLUP_STATE_DUMP_PATH: http://deployer:8081/state-dump.latest.json
       ROLLUP_CLIENT_HTTP: http://dtl:7878
@@ -160,8 +164,8 @@ services:
       RETRIES: 60
       ROLLUP_VERIFIER_ENABLE: 'true'
     ports:
-      - ${VERIFIER_HTTP_PORT:-8547}:8545
-      - ${VERIFIER_WS_PORT:-8548}:8546
+      - ${VERIFIER_HTTP_PORT:-18547}:8545
+      - ${VERIFIER_WS_PORT:-18548}:8546
 
   replica:
     depends_on:
@@ -169,6 +173,8 @@ services:
       - l2geth
     deploy:
       replicas: 1
+    volumes:
+      - ./data/replica:/root/.ethereum/geth/
     build:
       context: ..
       dockerfile: ./l2geth/Dockerfile
@@ -178,7 +184,7 @@ services:
       - ./envs/geth.env
     environment:
       <<: *system-addr-env
-      ETH1_HTTP: http://172.17.0.1:8545
+      ETH1_HTTP: http://l1_chain:8545
       SEQUENCER_CLIENT_HTTP: http://l2geth:8545
       ROLLUP_STATE_DUMP_PATH: http://deployer:8081/state-dump.latest.json
       ROLLUP_CLIENT_HTTP: http://dtl:7878
@@ -187,8 +193,8 @@ services:
       ETH1_CTC_DEPLOYMENT_HEIGHT: 8
       RETRIES: 60
     ports:
-      - ${REPLICA_HTTP_PORT:-8549}:8545
-      - ${REPLICA_WS_PORT:-8550}:8546
+      - ${REPLICA_HTTP_PORT:-18549}:8545
+      - ${REPLICA_WS_PORT:-18550}:8546
 
   replica_healthcheck:
     depends_on:
@@ -205,7 +211,7 @@ services:
       HEALTHCHECK__REFERENCE_RPC_PROVIDER: http://l2geth:8545
       HEALTHCHECK__TARGET_RPC_PROVIDER: http://replica:8545
     ports:
-      - ${HEALTHCHECK_HTTP_PORT:-7300}:7300
+      - ${HEALTHCHECK_HTTP_PORT:-17300}:7300
 
   integration_tests:
     deploy:
@@ -217,7 +223,7 @@ services:
     image: ethereumoptimism/integration-tests:${DOCKER_TAG_INTEGRATION_TESTS:-latest}
     entrypoint: ./integration-tests.sh
     environment:
-      L1_URL: http://172.17.0.1:8545
+      L1_URL: http://l1_chain:8545
       L2_URL: http://l2geth:8545
       HEALTHCHECK_URL: http://replica_healthcheck:7300/metrics
       REPLICA_URL: http://replica:8545
@@ -241,14 +247,14 @@ services:
       dockerfile: ./gas-oracle/Dockerfile
     image: ethereumoptimism/gas-oracle:${DOCKER_TAG_GAS_ORACLE:-latest}
     environment:
-      GAS_PRICE_ORACLE_ETHEREUM_HTTP_URL: http://172.17.0.1:8545
+      GAS_PRICE_ORACLE_ETHEREUM_HTTP_URL: http://l1_chain:8545
       GAS_PRICE_ORACLE_LAYER_TWO_HTTP_URL: http://l2geth:8545
       # Default hardhat account 5
       GAS_PRICE_ORACLE_PRIVATE_KEY: '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba'
 
   batch_submitter:
     depends_on:
-#      - l1_chain
+      - l1_chain
       - deployer
       - l2geth
     build:
@@ -259,7 +265,7 @@ services:
     env_file:
       - ./envs/batch-submitter.env
     environment:
-      L1_ETH_RPC: http://172.17.0.1:8545
+      L1_ETH_RPC: http://l1_chain:8545
       L2_ETH_RPC: http://l2geth:8545
       URL: http://deployer:8081/addresses.json
       BATCH_SUBMITTER_SEQUENCER_PRIVATE_KEY: '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
