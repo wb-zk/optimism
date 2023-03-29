@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
@@ -193,182 +195,198 @@ func (m *SimpleTxManager) craftTx(ctx context.Context, candidate TxCandidate) (*
 	return m.cfg.Signer(ctx, candidate.From, types.NewTx(rawTx))
 }
 
+// send submits the same transaction several times with increasing gas prices as necessary.
+// It waits for the transaction to be confirmed on chain.
 func (m *SimpleTxManager) send(ctx context.Context, tx *types.Transaction) (*types.Receipt, error) {
-	// Initialize a wait group to track any spawned goroutines, and ensure
-	// we properly clean up any dangling resources this method generates.
-	// We assert that this is the case thoroughly in our unit tests.
 	var wg sync.WaitGroup
 	defer wg.Wait()
-
-	// Initialize a subcontext for the goroutines spawned in this process.
-	// The defer to cancel is done here (in reverse order of Wait) so that
-	// the goroutines can exit before blocking on the wait group.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	sendState := NewSendState(m.cfg.SafeAbortNonceTooLowCount)
-
-	// Create a closure that will block on submitting the tx in the
-	// background, returning the first successfully mined receipt back to
-	// the main event loop via receiptChan.
 	receiptChan := make(chan *types.Receipt, 1)
-	sendTxAsync := func(tx *types.Transaction) {
-		defer wg.Done()
 
-		txHash := tx.Hash()
-		nonce := tx.Nonce()
-		gasTipCap := tx.GasTipCap()
-		gasFeeCap := tx.GasFeeCap()
-		log := m.l.New("txHash", txHash, "nonce", nonce, "gasTipCap", gasTipCap, "gasFeeCap", gasFeeCap)
-		log.Info("publishing transaction")
-
-		cCtx, cancel := context.WithTimeout(ctx, m.cfg.NetworkTimeout)
-		defer cancel()
-		err := m.backend.SendTransaction(cCtx, tx)
-		sendState.ProcessSendError(err)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			if errors.Is(err, txpool.ErrAlreadyKnown) {
-				log.Info("resubmitted already known transaction")
-				return
-			}
-			log.Error("unable to publish transaction", "err", err)
-			if sendState.ShouldAbortImmediately() {
-				log.Warn("Aborting transaction submission")
-				cancel()
-			}
-			return
-		}
-
-		log.Info("transaction published successfully")
-
-		// Wait for the transaction to be mined, reporting the receipt
-		// back to the main event loop if found.
-		receipt, err := m.waitMined(ctx, tx, sendState)
-		if err != nil {
-			log.Debug("send tx failed", "err", err)
-		}
-		if receipt != nil {
-			// Use non-blocking select to ensure function can exit
-			// if more than one receipt is discovered.
-			select {
-			case receiptChan <- receipt:
-				log.Trace("send tx succeeded")
-			default:
-			}
-		}
-	}
-
-	// Submit and wait for the receipt at our first gas price in the
-	// background, before entering the event loop and waiting out the
-	// resubmission timeout.
+	// Immediately publish a transaction before starting the resumbission loop
 	wg.Add(1)
-	go sendTxAsync(tx)
+	go func(tx *types.Transaction) {
+		defer wg.Done()
+		m.publishTx(ctx, tx, sendState, receiptChan)
+	}(tx)
 
 	ticker := time.NewTicker(m.cfg.ResubmissionTimeout)
 	defer ticker.Stop()
 
 	for {
 		select {
-
-		// Whenever a resubmission timeout has elapsed, bump the gas
-		// price and publish a new transaction.
 		case <-ticker.C:
-			// Avoid republishing if we are waiting for confirmation on an
-			// existing tx. This is primarily an optimization to reduce the
-			// number of API calls we make, but also reduces the chances of
-			// getting a false positive reading for ShouldAbortImmediately.
+			// Don't resubmit a transaction if it has been mined, but we are waiting for the conf depth.
 			if sendState.IsWaitingForConfirmation() {
 				continue
 			}
-
-			// Increase the gas price & submit the new transaction
-			newTx, err := m.increaseGasPrice(ctx, tx)
-			if err != nil {
-				m.l.Error("Failed to increase the gas price for the tx", "err", err)
-				// Don't `continue` here so we resubmit the transaction with the same gas price.
-			} else {
-				// Save the tx so we know it's gas price.
-				tx = newTx
+			// If we see lots of unrecoverable errors (and no pending transactions) abort sending the transaction.
+			if sendState.ShouldAbortImmediately() {
+				log.Warn("Aborting transaction submission")
+				return nil, errors.New("aborted transaction sending")
 			}
+			// Increase the gas price & submit the new transaction
+			tx = m.increaseGasPrice(ctx, tx)
 			wg.Add(1)
-			go sendTxAsync(tx)
-
-		// The passed context has been canceled, i.e. in the event of a
-		// shutdown.
+			go func(tx *types.Transaction) {
+				defer wg.Done()
+				m.publishTx(ctx, tx, sendState, receiptChan)
+			}(tx)
 		case <-ctx.Done():
+			m.l.Info("Send transaction context cancelled", "err", ctx.Err())
 			return nil, ctx.Err()
-
-		// The transaction has confirmed.
 		case receipt := <-receiptChan:
+			m.l.Info("Found transaction receipt", "hash", receipt.TxHash)
 			return receipt, nil
 		}
 	}
 }
 
-// waitMined implements the core functionality of WaitMined, with the option to
-// pass in a SendState to record whether or not the transaction is mined.
-func (m *SimpleTxManager) waitMined(ctx context.Context, tx *types.Transaction, sendState *SendState) (*types.Receipt, error) {
+// publishTx publishes the transaction to the transaction pool. It returns true if the transaction made it to the transaction
+// pool (with high probability) and should be waited for. If there is a network issue, the transaction may have been sent
+// It spawns an instance of [waitMined] after successfully publishing the transaction.
+func (m *SimpleTxManager) publishTx(ctx context.Context, tx *types.Transaction, sendState *SendState, receiptChan chan *types.Receipt) {
+	log := m.l.New("hash", tx.Hash(), "nonce", tx.Nonce(), "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
+	log.Info("publishing transaction")
+
+	cCtx, cancel := context.WithTimeout(ctx, m.cfg.NetworkTimeout)
+	defer cancel()
+	err := m.backend.SendTransaction(cCtx, tx)
+	sendState.ProcessSendError(err)
+	// Log the error at the correct verbosity.
+	// txpool.ErrAlreadyKnown is the only error where we do not poll for the transaction receipt. We do this because
+	// with other errors, there is a small chance that the transaction made it into the mempool. With
+	if errors.Is(err, context.Canceled) {
+		log.Warn("transaction send cancelled", "err", err)
+	} else if errors.Is(err, txpool.ErrAlreadyKnown) {
+		log.Info("resubmitted already known transaction")
+		return
+	} else if strings.Contains(err.Error(), core.ErrNonceTooLow.Error()) {
+		log.Info("nonce too low")
+	} else {
+		log.Error("unable to publish transaction", "err", err)
+	}
+	// Poll for the transaction to be ready
+	m.waitMined(ctx, tx.Hash(), sendState, receiptChan)
+}
+
+// waitMined waits for the transaction to be mined or for the context to be cancelled.
+// It will do a non-blocking send to the receiptsChan when it finds a receipt that has passed the configured confirmation depth.
+func (m *SimpleTxManager) waitMined(ctx context.Context, txHash common.Hash, sendState *SendState, receiptChan chan *types.Receipt) {
 	queryTicker := time.NewTicker(m.cfg.ReceiptQueryInterval)
 	defer queryTicker.Stop()
-
-	txHash := tx.Hash()
-
 	for {
-		cCtx, cancel := context.WithTimeout(ctx, m.cfg.NetworkTimeout)
-		receipt, err := m.backend.TransactionReceipt(cCtx, txHash)
-		cancel()
-		switch {
-		case receipt != nil:
-			if sendState != nil {
-				sendState.TxMined(txHash)
-			}
-
-			txHeight := receipt.BlockNumber.Uint64()
-			tipHeight, err := m.backend.BlockNumber(ctx)
-			if err != nil {
-				m.l.Error("Unable to fetch block number", "err", err)
-				break
-			}
-
-			m.l.Debug("Transaction mined, checking confirmations", "txHash", txHash, "txHeight", txHeight,
-				"tipHeight", tipHeight, "numConfirmations", m.cfg.NumConfirmations)
-
-			// The transaction is considered confirmed when
-			// txHeight+numConfirmations-1 <= tipHeight. Note that the -1 is
-			// needed to account for the fact that confirmations have an
-			// inherent off-by-one, i.e. when using 1 confirmation the
-			// transaction should be confirmed when txHeight is equal to
-			// tipHeight. The equation is rewritten in this form to avoid
-			// underflows.
-			if txHeight+m.cfg.NumConfirmations <= tipHeight+1 {
-				m.l.Info("Transaction confirmed", "txHash", txHash)
-				return receipt, nil
-			}
-
-			// Safe to subtract since we know the LHS above is greater.
-			confsRemaining := (txHeight + m.cfg.NumConfirmations) - (tipHeight + 1)
-			m.l.Debug("Transaction not yet confirmed", "txHash", txHash, "confsRemaining", confsRemaining)
-
-		case err != nil:
-			m.l.Trace("Receipt retrievel failed", "hash", txHash, "err", err)
-
-		default:
-			if sendState != nil {
-				sendState.TxNotMined(txHash)
-			}
-			m.l.Trace("Transaction not yet mined", "hash", txHash)
-		}
-
 		select {
 		case <-ctx.Done():
-			m.l.Warn("context cancelled in waitMined")
-			return nil, ctx.Err()
+			m.l.Warn("context cancelled in waitMined", "hash", txHash)
+			return
 		case <-queryTicker.C:
+			if receipt := m.queryReceipt(ctx, txHash, sendState); receipt != nil {
+				select {
+				case receiptChan <- receipt:
+				default:
+				}
+				return
+			}
 		}
 	}
+}
+
+// queryReceipt queries for the receipt and returns the receipt if it has passed the confirmation depth
+func (m *SimpleTxManager) queryReceipt(ctx context.Context, txHash common.Hash, sendState *SendState) *types.Receipt {
+	ctx, cancel := context.WithTimeout(ctx, m.cfg.NetworkTimeout)
+	defer cancel()
+	receipt, err := m.backend.TransactionReceipt(ctx, txHash)
+	if errors.Is(err, ethereum.NotFound) {
+		if sendState != nil {
+			sendState.TxNotMined(txHash)
+		}
+		m.l.Trace("Transaction yet mined", "hash", txHash)
+		return nil
+	} else if err != nil {
+		m.l.Info("Receipt retrievel failed", "hash", txHash, "err", err)
+		return nil
+	} else if receipt == nil {
+		m.l.Warn("Receipt and error are both nil", "hash", txHash)
+		return nil
+	}
+
+	// Receipt is confirmed to be valid from this point on
+	if sendState != nil {
+		sendState.TxMined(txHash)
+	}
+
+	txHeight := receipt.BlockNumber.Uint64()
+	tipHeight, err := m.backend.BlockNumber(ctx)
+	if err != nil {
+		m.l.Error("Unable to fetch block number", "err", err)
+		return nil
+	}
+
+	m.l.Debug("Transaction mined, checking confirmations", "hash", txHash, "txHeight", txHeight,
+		"tipHeight", tipHeight, "numConfirmations", m.cfg.NumConfirmations)
+
+	// The transaction is considered confirmed when
+	// txHeight+numConfirmations-1 <= tipHeight. Note that the -1 is
+	// needed to account for the fact that confirmations have an
+	// inherent off-by-one, i.e. when using 1 confirmation the
+	// transaction should be confirmed when txHeight is equal to
+	// tipHeight. The equation is rewritten in this form to avoid
+	// underflows.
+	if txHeight+m.cfg.NumConfirmations <= tipHeight+1 {
+		m.l.Info("Transaction confirmed", "hash", txHash)
+		return receipt
+	}
+
+	// Safe to subtract since we know the LHS above is greater.
+	confsRemaining := (txHeight + m.cfg.NumConfirmations) - (tipHeight + 1)
+	m.l.Debug("Transaction not yet confirmed", "hash", txHash, "confsRemaining", confsRemaining)
+	return nil
+}
+
+// increaseGasPrice takes the previous transaction & potentially clones then signs it with a higher tip.
+// If the tip + basefee suggested by the network are not greater than the previous values, the same transaction
+// will be returned. If they are greater, this function will ensure that they are at least greater by 15% than
+// the previous transaction's value to ensure that the price bump is large enough.
+//
+// We do not re-estimate the amount of gas used because for some stateful transactions (like output proposals) the
+// act of including the transaction renders the repeat of the transaction invalid.
+//
+// If it encounters an error with creating the new transaction, it will return the old transaction.
+func (m *SimpleTxManager) increaseGasPrice(ctx context.Context, tx *types.Transaction) *types.Transaction {
+	tip, basefee, err := m.suggestGasPriceCaps(ctx)
+	if err != nil {
+		m.l.Warn("failed to get suggested gas tip and basefee", "err", err)
+		return tx
+	}
+	gasTipCap, gasFeeCap := updateFees(tx.GasTipCap(), tx.GasFeeCap(), tip, basefee, m.l)
+
+	if tx.GasTipCapIntCmp(gasTipCap) == 0 && tx.GasFeeCapIntCmp(gasFeeCap) == 0 {
+		return tx
+	}
+
+	rawTx := &types.DynamicFeeTx{
+		ChainID:    tx.ChainId(),
+		Nonce:      tx.Nonce(),
+		GasTipCap:  gasTipCap,
+		GasFeeCap:  gasFeeCap,
+		Gas:        tx.Gas(),
+		To:         tx.To(),
+		Value:      tx.Value(),
+		Data:       tx.Data(),
+		AccessList: tx.AccessList(),
+	}
+	ctx, cancel := context.WithTimeout(ctx, m.cfg.NetworkTimeout)
+	defer cancel()
+	newTx, err := m.cfg.Signer(ctx, m.cfg.From, types.NewTx(rawTx))
+	if err != nil {
+		m.l.Warn("failed to sign new transaction", "err", err)
+		return tx
+	}
+	return newTx
 }
 
 // suggestGasPriceCaps suggests what the new tip & new basefee should be based on the current L1 conditions
@@ -390,40 +408,6 @@ func (m *SimpleTxManager) suggestGasPriceCaps(ctx context.Context) (*big.Int, *b
 		return nil, nil, errors.New("txmgr does not support pre-london blocks that do not have a basefee")
 	}
 	return tip, head.BaseFee, nil
-}
-
-// increaseGasPrice takes the previous transaction & potentially clones then signs it with a higher tip.
-// If the tip + basefee suggested by the network are not greater than the previous values, the same transaction
-// will be returned. If they are greater, this function will ensure that they are at least greater by 15% than
-// the previous transaction's value to ensure that the price bump is large enough.
-//
-// We do not re-estimate the amount of gas used because for some stateful transactions (like output proposals) the
-// act of including the transaction renders the repeat of the transaction invalid.
-func (m *SimpleTxManager) increaseGasPrice(ctx context.Context, tx *types.Transaction) (*types.Transaction, error) {
-	tip, basefee, err := m.suggestGasPriceCaps(ctx)
-	if err != nil {
-		return nil, err
-	}
-	gasTipCap, gasFeeCap := updateFees(tx.GasTipCap(), tx.GasFeeCap(), tip, basefee, m.l)
-
-	if tx.GasTipCapIntCmp(gasTipCap) == 0 && tx.GasFeeCapIntCmp(gasFeeCap) == 0 {
-		return tx, nil
-	}
-
-	rawTx := &types.DynamicFeeTx{
-		ChainID:    tx.ChainId(),
-		Nonce:      tx.Nonce(),
-		GasTipCap:  gasTipCap,
-		GasFeeCap:  gasFeeCap,
-		Gas:        tx.Gas(),
-		To:         tx.To(),
-		Value:      tx.Value(),
-		Data:       tx.Data(),
-		AccessList: tx.AccessList(),
-	}
-	ctx, cancel := context.WithTimeout(ctx, m.cfg.NetworkTimeout)
-	defer cancel()
-	return m.cfg.Signer(ctx, m.cfg.From, types.NewTx(rawTx))
 }
 
 // calcThresholdValue returns x * priceBumpPercent / 100
