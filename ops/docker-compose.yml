@@ -248,7 +248,7 @@ services:
 
   batch_submitter:
     depends_on:
-      - l1_chain
+#      - l1_chain
       - deployer
       - l2geth
     build:
