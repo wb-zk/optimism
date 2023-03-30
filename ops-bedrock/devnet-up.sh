@@ -87,9 +87,6 @@ fi
   wait_up $L1_URL
 )
 
-  echo "wenbin test l1"
-  sleep 10000
-
 
 # Bring up L2.
 (

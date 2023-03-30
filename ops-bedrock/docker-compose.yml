@@ -31,7 +31,7 @@ services:
       - "9545:8545"
       - "8060:6060"
     volumes:
-      - "l2_data:/db"
+      - "./data/l2_data:/db"
       - "${PWD}/../.devnet/genesis-l2.json:/genesis.json"
       - "${PWD}/test-jwt-secret.txt:/config/test-jwt-secret.txt"
     entrypoint:  # pass the L2 specific flags by overriding the entry-point and adding extra arguments
